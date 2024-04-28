@@ -9,6 +9,7 @@ import numpy as np
 import torch as t
 from torch import nn, optim
 from torch.distributions.categorical import Categorical
+import math
 
 from src.config import (
     EnvironmentConfig,
@@ -36,6 +37,9 @@ from .loss_functions import (
 )
 from .memory import Memory, process_memory_vars_to_log
 from .utils import get_obs_shape
+
+import sys
+import errno
 
 
 class PPOScheduler:
@@ -65,13 +69,15 @@ class PPOScheduler:
         """
         Implement linear learning rate decay so that after num_updates calls to step, the learning rate is end_lr.
         """
-        self.n_step_calls += 1
+        
+        
         frac = self.n_step_calls / self.num_updates
         assert frac <= 1
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = self.initial_lr + frac * (
                 self.end_lr - self.initial_lr
             )
+        
 
 
 class PPOAgent(nn.Module):
@@ -100,9 +106,17 @@ class PPOAgent(nn.Module):
         Returns:
             Tuple[optim.Optimizer, PPOScheduler]: A tuple containing the optimizer and its attached scheduler.
         """
+        
+        # weight_decay = 1e-3
+        
         optimizer = optim.Adam(
-            self.parameters(), lr=initial_lr, eps=1e-5, maximize=True
+            self.parameters(), lr=initial_lr, eps=1e-5, maximize=True, weight_decay = 3e-4,
         )
+        """
+        optimizer = optim.Adam(
+            self.parameters(), lr=initial_lr, eps=1e-5, maximize=True,
+        )
+        """
         scheduler = PPOScheduler(optimizer, initial_lr, end_lr, num_updates)
         return (optimizer, scheduler)
 
@@ -147,7 +161,7 @@ class FCAgent(PPOAgent):
         environment_config: EnvironmentConfig,
         fc_model_config=None,  # not necessary yet but keeps type signatures the same
         device: t.device = t.device("cpu"),
-        hidden_dim: int = 64,
+        hidden_dim: int = 256,
     ):
         """
         An agent for a Proximal Policy Optimization (PPO) algorithm.
@@ -174,17 +188,19 @@ class FCAgent(PPOAgent):
         self.critic = nn.Sequential(
             nn.Flatten(),
             self.layer_init(nn.Linear(self.num_obs, self.hidden_dim)),
-            nn.Tanh(),
+            nn.ReLU(),
             self.layer_init(nn.Linear(self.hidden_dim, self.hidden_dim)),
-            nn.Tanh(),
+            nn.ReLU(),
             self.layer_init(nn.Linear(self.hidden_dim, 1), std=1.0),
         )
         self.actor = nn.Sequential(
             nn.Flatten(),
             self.layer_init(nn.Linear(self.num_obs, self.hidden_dim)),
-            nn.Tanh(),
+            nn.ReLU(),
             self.layer_init(nn.Linear(self.hidden_dim, self.hidden_dim)),
-            nn.Tanh(),
+            nn.ReLU(),
+            self.layer_init(nn.Linear(self.hidden_dim, self.hidden_dim)),
+            nn.ReLU(),
             self.layer_init(
                 nn.Linear(self.hidden_dim, self.num_actions), std=0.01
             ),
@@ -199,6 +215,8 @@ class FCAgent(PPOAgent):
         envs: gym.vector.SyncVectorEnv,
         trajectory_writer=None,
         sampling_method="basic",
+        target_type = "key",
+        target_color = "green",
         **kwargs,
     ) -> None:
         """Performs the rollout phase of the PPO algorithm, collecting experience by interacting with the environment.
@@ -210,12 +228,11 @@ class FCAgent(PPOAgent):
             trajectory_writer (TrajectoryWriter, optional): The writer to log the
                 collected trajectories. Defaults to None.
         """
-
         device = memory.device
-        cuda = device == "cuda"
+        cuda = device.type == "cuda"
         obs = memory.next_obs
         done = memory.next_done
-
+            
         for _ in range(num_steps):
             with t.inference_mode():
                 logits = self.actor(obs)
@@ -223,9 +240,12 @@ class FCAgent(PPOAgent):
             probs = Categorical(logits=logits)
             action = sample_from_categorical(probs, sampling_method, **kwargs)
             logprob = probs.log_prob(action)
+            
             next_obs, reward, next_done, next_truncated, info = envs.step(
                 action.cpu().numpy()
-            )
+                )
+            
+
             next_obs = memory.obs_preprocessor(next_obs)
             reward = t.from_numpy(reward).to(device)
 
@@ -255,6 +275,7 @@ class FCAgent(PPOAgent):
                 )
             # Store (s_t, d_t, a_t, logpi(a_t|s_t), v(s_t), r_t+1)
             memory.add(info, obs, done, action, logprob, value, reward)
+            
             obs = t.from_numpy(next_obs).to(device)
             done = t.from_numpy(next_done).to(device, dtype=t.float)
 
@@ -271,6 +292,9 @@ class FCAgent(PPOAgent):
         optimizer: optim.Optimizer,
         scheduler: PPOScheduler,
         track: bool,
+        save = False,
+        mix = False,
+        mix_frac = None,
     ) -> None:
         """Performs the learning phase of the PPO algorithm, updating the agent's parameters
         using the collected experience.
@@ -282,8 +306,10 @@ class FCAgent(PPOAgent):
             scheduler (PPOScheduler): The scheduler attached to the optimizer.
             track (bool): Whether to track the training progress.
         """
-        for _ in range(args.update_epochs):
-            minibatches = memory.get_minibatches()
+        for k in range(args.update_epochs):
+            if k!=0:
+                save = False
+            minibatches = memory.get_minibatches(save = save, mix = mix, mix_frac = mix_frac)
             # Compute loss on each minibatch, and step the optimizer
             for mb in minibatches:
                 logits = self.actor(mb.obs)
@@ -332,6 +358,7 @@ class FCAgent(PPOAgent):
                 entropy=entropy_bonus.item(),
                 approx_kl=approx_kl,
                 clipfrac=np.mean(clipfracs),
+                avg_return=np.mean(memory.episode_returns),
             )
 
 
@@ -407,9 +434,9 @@ class TransformerPPOAgent(PPOAgent):
         actions_timesteps = obs_timesteps - 1
         action_pad_token = self.actor.environment_config.action_space.n
         n_envs = envs.num_envs
-        if isinstance(device, t.device):
-            device = str(device)
-        cuda = device == "cuda"
+        if isinstance(device, str):
+            device = t.device(device)
+        cuda = device.type == "cuda"
 
         obss = t.zeros((n_envs, obs_timesteps, *obs.shape[1:]), device=device)
         acts = (
@@ -464,11 +491,13 @@ class TransformerPPOAgent(PPOAgent):
             probs = Categorical(logits=logits[:, -1])
             action = sample_from_categorical(probs, sampling_method, **kwargs)
             logprob = probs.log_prob(action)
+            
             next_obs, reward, next_done, next_truncated, info = envs.step(
                 action.cpu().numpy()
-            )
+                )
             next_obs = memory.obs_preprocessor(next_obs)
             reward = t.from_numpy(reward).to(device)
+            print(next_obs, reward, next_done, next_truncated)
 
             # in each case where an episode is done, we need to reset the context window
             # this is done by setting the last obs to the current obs and the rest to 0
@@ -662,8 +691,8 @@ class LSTMPPOAgent(PPOAgent):
         sampling_method="basic",
         **kwargs,
     ) -> None:
-        device = str(memory.device)
-        cuda = device == "cuda"
+        device = memory.device
+        cuda = device.type == "cuda"
         obs = memory.next_obs
         done = memory.next_done
         self.recurrence_memory = t.zeros(
@@ -681,9 +710,10 @@ class LSTMPPOAgent(PPOAgent):
             probs = results["dist"]
             action = sample_from_categorical(probs, sampling_method, **kwargs)
             logprob = probs.log_prob(action)
+            
             next_obs, reward, next_done, next_truncated, info = envs.step(
                 action.cpu().numpy()
-            )
+                )
 
             next_obs = memory.obs_preprocessor(next_obs)
             reward = t.from_numpy(reward).to(device)

@@ -77,6 +77,7 @@ class Memory:
         envs: gym.vector.SyncVectorEnv,
         args: OnlineTrainConfig,
         device: t.device = t.device("cpu"),
+        objective = None,
     ):
         """
         Initializes the memory buffer.
@@ -95,6 +96,10 @@ class Memory:
         self.device = device
         self.global_step = 0
         self.obs_preprocessor = get_obs_preprocessor(envs.observation_space)
+        self.objective = objective
+        self.saved_experiences = []
+        self.saved_advantages = None
+        self.saved_returns = None
         self.reset()
 
     def add(self, *data: t.Tensor):
@@ -119,7 +124,14 @@ class Memory:
                             )
 
                     self.global_step += 1
-
+    
+    def switch_objective(self, objective):
+        self.objective = objective
+    
+    def track_prev(self, prev_reward, terminated, truncated):
+        if terminated or truncated:
+            self.prev_objective_returns.append(prev_reward)
+        
     def sample_experiences(self):
         """Prints out a randomly selected experience as a sanity check.
 
@@ -233,6 +245,9 @@ class Memory:
         self,
         recurrence: Optional[int] = None,
         indexes: Optional[List[np.array]] = None,
+        save = False,
+        mix = False,
+        mix_frac = None,
     ) -> List[Minibatch]:
         """Return a list of length (batch_size // minibatch_size)
           where each element is an array of indexes into the batch.
@@ -248,6 +263,7 @@ class Memory:
             t.stack(arr) if isinstance(arr[0], t.Tensor) else arr
             for arr in zip(*self.experiences)
         ]
+
         advantages = self.compute_advantages(
             self.next_value,
             self.next_done,
@@ -258,31 +274,96 @@ class Memory:
             self.args.gamma,
             self.args.gae_lambda,
         )
+        
         returns = advantages + values
+        
+        quants = [
+            obs,
+            actions,
+            logprobs,
+            advantages,
+            values,
+            returns,
+            *extras,
+        ]
+        
+        for i, arr in enumerate(quants):
+            assert type(arr) is t.Tensor
+            quants[i] = arr.transpose(0, 1).flatten(
+                0, 1
+            )
+        if save:
+            print("SAVING")
+            self.saved_experiences = self.saved_experiences + self.experiences
+            if self.saved_advantages is not None:
+                self.saved_advantages = t.cat((self.saved_advantages, quants[3]))
+                self.saved_returns = t.cat((self.saved_returns, quants[5]))
+            else:
+                self.saved_advantages = quants[3]
+                self.saved_returns = quants[5]
+            
 
         if indexes is None:
             indexes = self.get_minibatch_indexes(
                 self.args.batch_size, self.args.minibatch_size, recurrence
             )
-
-        minibatches = []
-        for ind in indexes:
-            batch = []
-            for arr in [
-                obs,
-                actions,
-                logprobs,
-                advantages,
-                values,
-                returns,
+        
+        if mix:
+            assert mix_frac is not None
+            s_obs, s_dones, s_actions, s_logprobs, s_values, s_rewards, *s_extras = [
+                t.stack(arr) if isinstance(arr[0], t.Tensor) else arr
+                for arr in zip(*self.saved_experiences)
+            ]
+            saved_quants = [
+                s_obs,
+                s_actions,
+                s_logprobs,
+                self.saved_advantages,
+                s_values,
+                self.saved_returns,
                 *extras,
-            ]:
-                if isinstance(arr, t.Tensor):
-                    flat_arr = arr.transpose(0, 1).flatten(
+            ]
+            for i, arr in enumerate(saved_quants):
+                if i not in [3, 5]:
+                    assert type(arr) is t.Tensor
+                    saved_quants[i] = arr.transpose(0, 1).flatten(
                         0, 1
-                    )  # usually arr is a tensor
-                    batch.append(flat_arr[ind])
+                    )
+            
+            assert self.args.batch_size % self.args.minibatch_size == 0
+            mb_num = self.args.batch_size // self.args.minibatch_size
+            
+            num_saved = int(self.args.batch_size*mix_frac)
+            num_saved = max(num_saved - num_saved%mb_num, mb_num)
+            
+            perm = np.random.permutation(len(self.saved_experiences)*self.args.num_envs)
+            saved_indices = perm[:num_saved]
+            
+            saved_indices = rearrange(
+            saved_indices,
+            "(mb_num mb_size) -> mb_num mb_size",
+            mb_num=mb_num,
+            )
+            saved_indices = list(saved_indices)
+            
+        
+        minibatches = []
+        for a, ind in enumerate(indexes):
+            batch = []
+            for b, arr in enumerate(quants):
+                if isinstance(arr, t.Tensor):
+                    batch_arr = arr[ind]
+                    if mix:
+                        s_ind = saved_indices[a]
+                        s_arr = saved_quants[b]
+                        s_batch_arr = s_arr[s_ind]
+                        batch_arr = batch_arr[:len(ind) - len(s_ind)]
+                        batch_arr = t.cat((batch_arr, s_batch_arr))
+                        
+                    batch.append(batch_arr)
                 else:
+                    # not implemented properly
+                    assert mix is False
                     num_steps = len(arr)
                     num_envs = len(arr[0])
                     # in lstm, arr can be a list of attribute dictionaries with the mission statement as well.
@@ -522,10 +603,13 @@ class Memory:
         If not, then the bar's description won't change.
         """
         if self.episode_lengths:
-            global_step = self.global_step
-            avg_episode_length = np.mean(self.episode_lengths)
-            avg_episode_return = np.mean(self.episode_returns)
-            return f"{global_step=:<06}\n{avg_episode_length=:<3.2f}\n{avg_episode_return=:<3.2f}"
+            step = self.global_step
+            length = np.mean(self.episode_lengths)
+            ret = np.mean(self.episode_returns)
+
+            print("\n")
+            
+            return f"{self.objective} {step=:<06} {length=:<3.2f} {ret=:<3.2f}"
 
     def reset(self) -> None:
         """Function to be called at the end of each rollout period, to make
@@ -535,6 +619,8 @@ class Memory:
         self.vars_to_log = defaultdict(dict)
         self.episode_lengths = []
         self.episode_returns = []
+        self.prev_objective_lengths = []
+        self.prev_objective_returns = []
         if self.next_obs is None:
             (obs, info) = self.envs.reset()
             obs = self.obs_preprocessor(obs)
@@ -542,15 +628,22 @@ class Memory:
             self.next_done = t.zeros(self.envs.num_envs).to(
                 self.device, dtype=t.float
             )
-
+            
     def add_vars_to_log(self, **kwargs):
         """Add variables to storage, for eventual logging (if args.track=True)."""
-        self.vars_to_log[self.global_step] |= kwargs
+        log_info = {}
+        for key, value in kwargs.items():
+            log_info[self.objective + "_" + key] = value
+        self.vars_to_log[self.global_step] |= log_info
 
     def log(self) -> None:
         """Logs variables to wandb."""
+        color = self.objective.split("_")[-1]
         for step, vars_to_log in self.vars_to_log.items():
-            wandb.log(vars_to_log, step=step)
+            num = random.randint(1, 5)
+            if num==1:
+                vars_to_log.update({f"step-{color}": step})
+                wandb.log(vars_to_log)
 
 
 def process_memory_vars_to_log(memory_vars_to_log):

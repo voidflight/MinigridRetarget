@@ -1,21 +1,17 @@
 from abc import abstractmethod
-from typing import Tuple
+from typing import Tuple, Union
 
+import einops
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 from gymnasium.spaces import Box, Dict
 from torchtyping import TensorType as TT
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
 from src.config import EnvironmentConfig, TransformerModelConfig
-
-from .components import (
-    MiniGridConvEmbedder,
-    PosEmbedTokens,
-    MiniGridViTEmbedder,
-)
 
 
 class TrajectoryTransformer(nn.Module):
@@ -35,8 +31,6 @@ class TrajectoryTransformer(nn.Module):
         self.transformer_config = transformer_config
         self.environment_config = environment_config
 
-        # Why is this in a sequential? Need to get rid of it at some
-        # point when I don't care about loading older models.
         self.action_embedding = nn.Sequential(
             nn.Embedding(
                 environment_config.action_space.n + 1,
@@ -64,42 +58,6 @@ class TrajectoryTransformer(nn.Module):
         )
         self.initialize_state_predictor()
 
-        self.initialize_weights()
-
-    def initialize_weights(self):
-        """
-        TransformerLens is weird so we have to use the module path
-        and can't just rely on the module instance as we do would
-        be the default approach in pytorch.
-        """
-        self.apply(self._init_weights_classic)
-
-        for name, param in self.named_parameters():
-            if "W_" in name:
-                nn.init.normal_(param, std=0.02)
-
-    def _init_weights_classic(self, module):
-        """
-        Use Min GPT Method.
-        https://github.com/karpathy/minGPT/blob/37baab71b9abea1b76ab957409a1cc2fbfba8a26/mingpt/model.py#L163
-
-        Will need to check that this works with the transformer_lens library.
-        """
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        elif isinstance(module, nn.LayerNorm):
-            torch.nn.init.zeros_(module.bias)
-            torch.nn.init.ones_(module.weight)
-        elif (
-            "PosEmbedTokens" in module._get_name()
-        ):  # transformer lens components
-            for param in module.parameters():
-                torch.nn.init.normal_(param, mean=0.0, std=0.02)
-
     def get_time_embedding(self, timesteps):
         assert (
             timesteps.max() <= self.environment_config.max_steps
@@ -122,19 +80,15 @@ class TrajectoryTransformer(nn.Module):
     def get_state_embedding(self, states):
         # embed states and recast back to (batch, block_size, n_embd)
         block_size = states.shape[1]
-        if self.transformer_config.state_embedding_type.lower() in [
-            "cnn",
-            "vit",
-        ]:
+        if self.transformer_config.state_embedding_type == "CNN":
             states = rearrange(
                 states,
-                "batch block height width channel -> (batch block) height width channel",
+                "batch block height width channel -> (batch block) channel height width",
             )
             state_embeddings = self.state_embedding(
                 states.type(torch.float32).contiguous()
             )  # (batch * block_size, n_embd)
-
-        elif self.transformer_config.state_embedding_type.lower() == "grid":
+        elif self.transformer_config.state_embedding_type == "grid":
             states = rearrange(
                 states,
                 "batch block height width channel -> (batch block) (channel height width)",
@@ -219,14 +173,8 @@ class TrajectoryTransformer(nn.Module):
         return self.time_embedding
 
     def initialize_state_embedding(self):
-        if self.transformer_config.state_embedding_type.lower() == "cnn":
-            state_embedding = MiniGridConvEmbedder(
-                self.transformer_config.d_model, endpool=True
-            )
-        elif self.transformer_config.state_embedding_type.lower() == "vit":
-            state_embedding = MiniGridViTEmbedder(
-                self.transformer_config.d_model,
-            )
+        if self.transformer_config.state_embedding_type == "CNN":
+            state_embedding = StateEncoder(self.transformer_config.d_model)
         else:
             if isinstance(self.environment_config.observation_space, Dict):
                 n_obs = np.prod(
@@ -270,9 +218,10 @@ class TrajectoryTransformer(nn.Module):
             d_vocab=self.transformer_config.d_model,
             # 3x the max timestep so we have room for an action, reward, and state per timestep
             n_ctx=self.transformer_config.n_ctx,
-            act_fn=self.transformer_config.activation_fn,
-            gated_mlp=self.transformer_config.gated_mlp,
-            normalization_type=self.transformer_config.layer_norm,
+            act_fn="relu",
+            normalization_type="LN"
+            if self.transformer_config.layer_norm
+            else None,
             attention_dir="causal",
             d_vocab_out=self.transformer_config.d_model,
             seed=self.transformer_config.seed,
@@ -313,7 +262,11 @@ class DecisionTransformer(TrajectoryTransformer):
         # n_ctx include full timesteps except for the last where it doesn't know the action
         assert (transformer_config.n_ctx - 2) % 3 == 0
 
-        self.initialize_weights()
+        nn.init.normal_(
+            self.reward_embedding[0].weight,
+            mean=0.0,
+            std=1 / self.transformer_config.d_model,
+        )
 
     def predict_rewards(self, x):
         return self.reward_predictor(x)
@@ -520,8 +473,6 @@ class CloneTransformer(TrajectoryTransformer):
         self.transformer = (
             self.initialize_easy_transformer()
         )  # this might not be needed?
-
-        self.initialize_weights()
 
     def get_token_embeddings(
         self, state_embeddings, time_embeddings, action_embeddings=None
@@ -751,7 +702,6 @@ class CriticTransfomer(CloneTransformer):
         self.value_predictor = nn.Linear(
             transformer_config.d_model, 1, bias=True
         )
-        self.initialize_weights()
 
     def forward(
         self,
@@ -770,3 +720,51 @@ class CriticTransfomer(CloneTransformer):
     # hacky way to predict values instead of actions with same information
     def predict_actions(self, x):
         return self.value_predictor(x)
+
+
+class StateEncoder(nn.Module):
+    def __init__(self, n_embed):
+        super(StateEncoder, self).__init__()
+        self.n_embed = n_embed
+        # input has shape 56 x 56 x 3
+        # output has shape 1 x 1 x 512
+        self.conv1 = nn.Conv2d(3, 32, 8, stride=4, padding=0)  # 56 -> 13
+        self.conv2 = nn.Conv2d(32, 64, 4, stride=2, padding=0)  # 13 -> 5
+        self.conv3 = nn.Conv2d(64, 64, 3, stride=1, padding=0)  # 5 -> 3
+        self.flatten = nn.Flatten()
+        self.fc = nn.Linear(576, n_embed)
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = self.flatten(x)
+        x = self.fc(x)
+        x = F.relu(x)
+        return x
+
+
+class PosEmbedTokens(nn.Module):
+    def __init__(self, cfg: Union[Dict, HookedTransformerConfig]):
+        super().__init__()
+        if isinstance(cfg, Dict):
+            cfg = HookedTransformerConfig.from_dict(cfg)
+        self.cfg = cfg
+        self.W_pos = nn.Parameter(
+            torch.empty(self.cfg.n_ctx, self.cfg.d_model)
+        )
+
+    def forward(
+        self,
+        tokens: TT["batch", "position"],  # noqa: F821
+        past_kv_pos_offset: int = 0,
+    ) -> TT["batch", "position", "d_model"]:  # noqa: F821
+        """Tokens have shape [batch, pos]
+        Output shape [pos, d_model] - will be broadcast along batch dim"""
+
+        tokens_length = tokens.size(-2)
+        pos_embed = self.W_pos[:tokens_length, :]  # [pos, d_model]
+        broadcast_pos_embed = einops.repeat(
+            pos_embed, "pos d_model -> batch pos d_model", batch=tokens.size(0)
+        )  # [batch, pos, d_model]
+        return broadcast_pos_embed

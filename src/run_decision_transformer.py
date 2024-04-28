@@ -18,6 +18,7 @@ if __name__ == "__main__":
         track=args.track,
         wandb_project_name=args.wandb_project_name,
         wandb_entity=args.wandb_entity,
+
     )
 
     TIME_EMBEDDING_TYPE = (
@@ -28,14 +29,11 @@ if __name__ == "__main__":
         d_model=args.d_model,
         n_heads=args.n_heads,
         d_mlp=args.d_mlp,
-        activation_fn=args.activation_fn,
-        gated_mlp=args.gated_mlp,
         n_layers=args.n_layers,
         layer_norm=args.layer_norm,
         time_embedding_type=TIME_EMBEDDING_TYPE,
-        state_embedding_type=args.state_embedding,
         n_ctx=args.n_ctx,
-        device=run_config.device,
+        device=run_config.device
     )
 
     offline_config = OfflineTrainConfig(
@@ -44,12 +42,7 @@ if __name__ == "__main__":
         pct_traj=args.pct_traj,
         train_epochs=args.train_epochs,
         test_epochs=args.test_epochs,
-        optimizer=args.optimizer,
-        scheduler=args.scheduler,
         lr=args.learning_rate,
-        lr_end=args.lr_end,
-        num_cycles=args.num_cycles,
-        warm_up_steps=args.warm_up_steps,
         weight_decay=args.weight_decay,
         batch_size=args.batch_size,
         test_frequency=args.test_frequency,
@@ -61,7 +54,7 @@ if __name__ == "__main__":
         eval_max_time_steps=args.eval_max_time_steps,
         track=args.track,
         convert_to_one_hot=args.convert_to_one_hot,
-        device=run_config.device,
+        device=run_config.device
     )
 
     run_decision_transformer(

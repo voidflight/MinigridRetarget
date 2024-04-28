@@ -248,9 +248,12 @@ def get_obs_shape(single_observation_space) -> tuple:
 
 
 def store_model_checkpoint(
-    agent, online_config, run_config, checkpoint_num, checkpoint_artifact
+    agent, online_config, run_config, checkpoint_num, checkpoint_artifact, track_objective = False, objective = None
 ) -> int:
-    checkpoint_name = f"{run_config.exp_name}_{checkpoint_num:0>2}"
+    if track_objective:
+        checkpoint_name = f"{run_config.exp_name}_{objective}_{checkpoint_num:0>2}"
+    else:
+        checkpoint_name = f"{run_config.exp_name}_{checkpoint_num:0>2}"
     checkpoint_path = f"models/{checkpoint_name}.pt"
 
     torch.save(

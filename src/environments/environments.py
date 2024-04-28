@@ -6,9 +6,10 @@ from src.config import EnvironmentConfig
 from .wrappers import RenderResizeWrapper, ViewSizeWrapper
 
 
-def make_env(config: EnvironmentConfig, seed: int, idx: int, run_name: str):
+def make_env(config: EnvironmentConfig, seed: int, idx: int, run_name: str, target_color = None):
     """Return a function that returns an environment after setting up boilerplate."""
-
+    record_color = "red"
+    
     # only one of fully observed or flat one hot can be true.
     assert not (
         config.fully_observed and config.one_hot_obs
@@ -26,9 +27,11 @@ def make_env(config: EnvironmentConfig, seed: int, idx: int, run_name: str):
         env = gym.wrappers.RecordEpisodeStatistics(env)
         if config.capture_video and idx == 0:
             env = RenderResizeWrapper(env, 256, 256)
+            
+            
             env = gym.wrappers.RecordVideo(
                 env,
-                f"videos/{run_name}",
+                f"videos/{run_name}/{target_color}",
                 # Video every 50 runs for env #1
                 episode_trigger=lambda x: x % config.video_frequency == 0,
                 disable_logger=True,

@@ -6,7 +6,6 @@ import dataclasses
 import json
 import os
 import uuid
-from typing import Optional
 from dataclasses import dataclass
 
 import gymnasium as gym
@@ -35,7 +34,7 @@ class EnvironmentConfig:
     view_size: int = 7
     capture_video: bool = False
     video_dir: str = "videos"
-    video_frequency: int = 50
+    video_frequency: int = 47
     render_mode: str = "rgb_array"
     action_space: None = None
     observation_space: None = None
@@ -59,8 +58,8 @@ class EnvironmentConfig:
         self.observation_space = (
             self.observation_space or env.observation_space
         )
-        if isinstance(self.device, torch.device):
-            self.device = str(self.device)
+        if isinstance(self.device, str):
+            self.device = torch.device(self.device)
 
 
 @dataclass
@@ -74,9 +73,7 @@ class TransformerModelConfig:
     d_mlp: int = 256
     n_layers: int = 2
     n_ctx: int = 2
-    layer_norm: Optional[str] = None
-    gated_mlp: bool = False
-    activation_fn: str = "relu"
+    layer_norm: bool = False
     state_embedding_type: str = "grid"
     time_embedding_type: str = "embedding"
     seed: int = 1
@@ -85,37 +82,9 @@ class TransformerModelConfig:
     def __post_init__(self):
         assert self.d_model % self.n_heads == 0
         self.d_head = self.d_model // self.n_heads
-        # match t-lens
-
-        # while we still have older configs lying around.
-        if self.layer_norm == False or self.layer_norm is None:
-            self.layer_norm = None
-        elif self.layer_norm.lower() == "none":
-            self.layer_norm = None
-
-        assert self.state_embedding_type.lower() in ["grid", "cnn", "vit"]
-
-        assert self.layer_norm is None or self.layer_norm in [
-            "LNPre",
-            "LN",
-        ], "Layer norm must be None, LNPre, or LN, got {}".format(
-            self.layer_norm
-        )
-
-        assert self.activation_fn in [
-            "relu",
-            "gelu",
-            "silu",
-            "gelu_new",
-            "solu_ln",
-            "gelu_fast",
-        ], "Activation function must be relu, gelu, silu, gelu_new, solu_ln, or gelu_fast, got {}".format(
-            self.activation_fn
-        )
-
         assert self.time_embedding_type in ["embedding", "linear"]
-        if isinstance(self.device, torch.device):
-            self.device = str(self.device)
+        if isinstance(self.device, str):
+            self.device = torch.device(self.device)
 
 
 @dataclass
@@ -163,8 +132,8 @@ class LSTMModelConfig:
         assert self.lang_model in ["gru", "bigru", "attgru"]
         # self.observation_space = self.environment_config.observation_space
         # self.action_space = self.environment_config.action_space
-        if isinstance(self.device, torch.device):
-            self.device = str(self.device)
+        if isinstance(self.device, str):
+            self.device = torch.device(self.device)
 
 
 @dataclass
@@ -175,32 +144,27 @@ class OfflineTrainConfig:
 
     trajectory_path: str
     batch_size: int = 128
-    convert_to_one_hot: bool = False
-    optimizer: str = "AdamW"
-    scheduler: str = "ConstantWithWarmUp"
     lr: float = 0.0001
-    lr_end: float = 10e-8
     weight_decay: float = 0.0
-    warm_up_steps: int = 1000
-    num_cycles: int = 3
     pct_traj: float = 1.0
     prob_go_from_end: float = 0.0
+    device: str = "cpu"
+    track: bool = False
     train_epochs: int = 100
     test_epochs: int = 10
     test_frequency: int = 10
     eval_frequency: int = 10
     eval_episodes: int = 10
+    model_type: str = "decision_transformer"
+    convert_to_one_hot: bool = False
+    initial_rtg: list[float] = (0.0, 1.0)
     eval_max_time_steps: int = 100
     eval_num_envs: int = 8
-    initial_rtg: list[float] = (0.0, 1.0)
-    model_type: str = "decision_transformer"
-    track: bool = False
-    device: str = "cpu"
 
     def __post_init__(self):
         assert self.model_type in ["decision_transformer", "clone_transformer"]
-        if isinstance(self.device, torch.device):
-            self.device = str(self.device)
+        if isinstance(self.device, str):
+            self.device = torch.device(self.device)
 
 
 @dataclass
@@ -210,7 +174,7 @@ class OnlineTrainConfig:
     """
 
     use_trajectory_model: bool = False
-    hidden_size: int = 64
+    hidden_size: int = 256
     total_timesteps: int = 180000
     learning_rate: float = 0.00025
     decay_lr: bool = (False,)
@@ -239,8 +203,8 @@ class OnlineTrainConfig:
                 "trajectories", str(uuid.uuid4()) + ".gz"
             )
 
-        if isinstance(self.device, torch.device):
-            self.device = str(self.device)
+        if isinstance(self.device, str):
+            self.device = torch.device(self.device)
 
 
 @dataclass
@@ -257,8 +221,8 @@ class RunConfig:
     wandb_entity: str = None
 
     def __post_init__(self):
-        if isinstance(self.device, torch.device):
-            self.device = str(self.device)
+        if isinstance(self.device, str):
+            self.device = torch.device(self.device)
 
 
 class ConfigJsonEncoder(json.JSONEncoder):
@@ -285,8 +249,8 @@ class ConfigJsonEncoder(json.JSONEncoder):
         # check if new config is a dataclass
         if dataclasses.is_dataclass(new_config):
             return dataclasses.asdict(new_config)
-        if isinstance(new_config, torch.device):
-            self.device = str(new_config)
+        elif isinstance(new_config, torch.device):
+            return str(new_config)
         elif isinstance(new_config, gym.spaces.Space):
             return None  # don't save observation space and action space if they are named other stuff
         else:

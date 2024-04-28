@@ -7,13 +7,13 @@ import warnings
 import numpy as np
 import torch as t
 
+from src.config import EnvironmentConfig
 from src.decision_transformer.calibration import (
     calibration_statistics,
     plot_calibration_statistics,
 )
 from src.decision_transformer.utils import load_decision_transformer
 from src.environments.environments import make_env
-from src.environments.registration import register_envs
 
 logging.basicConfig(level=logging.INFO)
 
@@ -23,8 +23,6 @@ def runner(args):
 
     logger.info(f"Loading model from {args.model_path}")
     logger.info(f"Using environment {args.env_id}")
-
-    register_envs()
 
     dt = load_decision_transformer(args.model_path)
     env_func = make_env(
@@ -37,7 +35,7 @@ def runner(args):
     d_mlp = transformer_config.d_mlp
     n_ctx = transformer_config.n_ctx
     n_layers = transformer_config.n_layers
-    max_timestep = (50,)  # dt.environment_config.max_steps
+    max_timestep = dt.environment_config.max_steps
 
     warnings.filterwarnings("ignore", category=UserWarning)
     statistics = calibration_statistics(
@@ -70,7 +68,7 @@ def runner(args):
 
     # format the output path according to the input path.
     args.output_path = f"figures/{args.model_path.split('/')[-1].split('.')[0]}_calibration.png"
-    fig.write_image(args.output_path, scale=3)
+    fig.write_image(args.output_path)
 
 
 if __name__ == "__main__":

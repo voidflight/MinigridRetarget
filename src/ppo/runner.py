@@ -39,7 +39,9 @@ def ppo_runner(
 
     Returns: None.
     """
-
+    target_types = ["key"] * 4
+    target_colors = ["blue", "purple", "yellow", "grey"]
+    
     if online_config.trajectory_path:
         trajectory_writer = TrajectoryWriter(
             online_config.trajectory_path,
@@ -57,7 +59,7 @@ def ppo_runner(
     assert (
         environment_config.env_id in all_envs
     ), f"Environment {environment_config.env_id} not registered."
-
+    
     # wandb initialisation,
     run_name = f"{environment_config.env_id}__{run_config.exp_name}__{run_config.seed}__{int(time.time())}"
     if run_config.track:
@@ -76,25 +78,36 @@ def ppo_runner(
 
     # make envs
     set_global_seeds(run_config.seed)
-
-    envs = gym.vector.SyncVectorEnv(
-        [
-            make_env(
-                config=environment_config,
-                seed=environment_config.seed + i,
-                idx=i,
-                run_name=run_name,
-            )
-            for i in range(online_config.num_envs)
-        ]
-    )
+    
+    envs_list = []
+    for i, color in enumerate(target_colors):
+        
+        envs = gym.vector.SyncVectorEnv(
+            [
+                make_env(
+                    config=environment_config,
+                    seed=environment_config.seed + i,
+                    idx=i,
+                    run_name=run_name,
+                    target_color = color,
+                )
+                for i in range(online_config.num_envs)
+            ]
+        )
+        for env in envs.envs:
+            env.switch_target(target_types[i], color)
+            
+        envs_list.append(envs)
+        
+        wandb.define_metric(f"step-{color}")
+        wandb.define_metric(f"{target_types[i]}_{color}_avg_value", step_metric = f"step-{color}")
 
     agent = train_ppo(
         run_config=run_config,
         online_config=online_config,
         environment_config=environment_config,
         model_config=model_config,
-        envs=envs,
+        envs_list=envs_list,
         trajectory_writer=trajectory_writer,
     )
     if run_config.track:

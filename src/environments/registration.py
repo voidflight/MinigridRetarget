@@ -12,6 +12,7 @@ from src.ppo.my_probe_envs import (
 )
 
 from .memory import MemoryEnv
+from .fetchobstacles import FetchObstaclesEnv
 from .multienvironments import MultiEnvSampler
 
 
@@ -38,7 +39,51 @@ def get_dynamic_obstacles_multi_env(render_mode="rgb_array", max_steps=1000):
 
     return MultiEnvSampler(envs)
 
+def get_dynamic_obstacles_rand_goal(render_mode="rgb_array", max_steps=1000):
+    env = DynamicObstaclesEnv(
+        size=5, 
+        n_obstacles=3, 
+        rand_goal=True,
+        render_mode=render_mode
+    )
+    return env
 
+def get_fetch_obstacles(render_mode = "rgb_array", max_steps = 1000):
+    env = FetchObstaclesEnv(
+        size = 5,
+        n_obstacles = 1,
+        n_objs = 3,
+        render_mode = render_mode
+    )
+    return env
+
+def get_fetch_obstacles_7x7(render_mode = "rgb_array", max_steps = 1000):
+    env = FetchObstaclesEnv(
+        size = 7,
+        n_obstacles = 3,
+        n_objs = 3,
+        render_mode = render_mode
+    )
+    return env
+
+def get_fetch_obstacles_6x6(render_mode = "rgb_array", max_steps = 1000):
+    env = FetchObstaclesEnv(
+        size = 6,
+        n_obstacles = 1,
+        n_objs = 3,
+        render_mode = render_mode
+    )
+    return env
+
+def get_fetch_obstacles_8x8(render_mode = "rgb_array", max_steps = 1000):
+    env = FetchObstaclesEnv(
+        size = 8,
+        n_obstacles = 4,
+        n_objs = 3,
+        render_mode = render_mode
+    )
+    return env
+    
 def get_crossing_multi_env(render_mode="rgb_array", max_steps=1000):
     envs = []
     for size in range(5, 14, 2):
@@ -142,3 +187,23 @@ def register_envs():
         id="MiniGrid-MemoryS7FixedStart-v0",
         entry_point="src.environments.registration:get_memory_env_fixed_start",
     )
+    
+    register(
+        id="DynamicObstaclesRandGoal-v0",
+        entry_point="src.environments.registration:get_dynamic_obstacles_rand_goal")
+        
+    register(
+        id = "FetchObstacles-8x8-v0",
+        entry_point="src.environments.registration:get_fetch_obstacles_8x8")
+    
+    register(
+        id = "FetchObstacles-7x7-v0",
+        entry_point="src.environments.registration:get_fetch_obstacles_7x7")
+    
+    register(
+        id = "FetchObstacles-6x6-v0",
+        entry_point="src.environments.registration:get_fetch_obstacles_6x6")
+    
+    register(
+        id = "FetchObstacles-v0",
+        entry_point="src.environments.registration:get_fetch_obstacles")

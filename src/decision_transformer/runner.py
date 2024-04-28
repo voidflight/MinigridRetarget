@@ -37,7 +37,23 @@ def run_decision_transformer(
     make_env: Callable,
 ):
     warnings.filterwarnings("ignore", category=DeprecationWarning)
-    device = set_device(run_config)
+    if run_config.device == t.device("cuda"):
+        if t.cuda.is_available():
+            device = t.device("cuda")
+        else:
+            print("CUDA not available, using CPU instead.")
+            device = t.device("cpu")
+    elif run_config.device == t.device("cpu"):
+        device = t.device("cpu")
+    elif run_config.device == t.device("mps"):
+        if t.mps.is_available():
+            device = t.device("mps")
+        else:
+            print("MPS not available, using CPU instead.")
+            device = t.device("cpu")
+    else:
+        print("Invalid device, using CPU instead.")
+        device = t.device("cpu")
 
     if offline_config.trajectory_path is None:
         raise ValueError("Must specify a trajectory path.")
@@ -117,13 +133,27 @@ def run_decision_transformer(
             transformer_config=transformer_config,
         )
 
+    if run_config.track:
+        wandb.watch(model, log="parameters")
+
     model = train(
         model=model,
         trajectory_data_set=trajectory_data_set,
         env=env,
         make_env=make_env,
         device=device,
-        offline_config=offline_config,
+        lr=offline_config.lr,
+        weight_decay=offline_config.weight_decay,
+        batch_size=offline_config.batch_size,
+        track=offline_config.track,
+        train_epochs=offline_config.train_epochs,
+        test_epochs=offline_config.test_epochs,
+        test_frequency=offline_config.test_frequency,
+        eval_frequency=offline_config.eval_frequency,
+        eval_episodes=offline_config.eval_episodes,
+        initial_rtg=offline_config.initial_rtg,
+        eval_max_time_steps=offline_config.eval_max_time_steps,
+        eval_num_envs=offline_config.eval_num_envs,
     )
 
     if run_config.track:
@@ -165,25 +195,3 @@ def store_transformer_model(path, model, offline_config):
         },
         path,
     )
-
-
-def set_device(run_config):
-    if run_config.device == t.device("cuda"):
-        if t.cuda.is_available():
-            device = t.device("cuda")
-        else:
-            print("CUDA not available, using CPU instead.")
-            device = t.device("cpu")
-    elif run_config.device == t.device("cpu"):
-        device = t.device("cpu")
-    elif run_config.device == t.device("mps"):
-        if t.mps.is_available():
-            device = t.device("mps")
-        else:
-            print("MPS not available, using CPU instead.")
-            device = t.device("cpu")
-    else:
-        print("Invalid device, using CPU instead.")
-        device = t.device("cpu")
-
-    return device
