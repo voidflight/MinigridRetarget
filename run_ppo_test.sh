@@ -1,6 +1,6 @@
 #!/bin/bash
 
-python -m src.run_ppo --exp_name "Blue-Purple-Find-Seed" \
+python -m src.run_ppo --exp_name "Test-Seed" \
     --seed 84 \
     --cuda \
     --track \
@@ -8,7 +8,7 @@ python -m src.run_ppo --exp_name "Blue-Purple-Find-Seed" \
     --env_id "FetchObstacles-6x6-v0" \
     --view_size 5 \
     --total_timesteps 6000000 \
-    --learning_rate 0.0007
+    --learning_rate 0.00075 \
     --hidden_size 128 \
     --num_envs 32 \
     --num_steps 512 \
