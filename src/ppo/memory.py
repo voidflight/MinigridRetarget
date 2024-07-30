@@ -640,10 +640,8 @@ class Memory:
         """Logs variables to wandb."""
         color = self.objective.split("_")[-1]
         for step, vars_to_log in self.vars_to_log.items():
-            num = random.randint(1, 5)
-            if num==1:
-                vars_to_log.update({f"step-{color}": step})
-                wandb.log(vars_to_log)
+            vars_to_log.update({f"step-{color}": step})
+            wandb.log(vars_to_log)
 
 
 def process_memory_vars_to_log(memory_vars_to_log):

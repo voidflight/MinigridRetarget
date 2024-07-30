@@ -62,6 +62,7 @@ def ppo_runner(
     
     # wandb initialisation,
     run_name = f"{environment_config.env_id}__{run_config.exp_name}__{run_config.seed}__{int(time.time())}"
+    print(f"RUN CONFIG SEED: {run_config.seed}")
     if run_config.track:
         run = wandb.init(
             project=run_config.wandb_project_name,
@@ -81,6 +82,7 @@ def ppo_runner(
     
     envs_list = []
     for i, color in enumerate(target_colors):
+        print(f"ENV CONFIG SEED: {environment_config.seed}")
         
         envs = gym.vector.SyncVectorEnv(
             [
@@ -121,8 +123,8 @@ def combine_args(
     transformer_model_config=None,
 ):
     args = {}
-    args.update(run_config.__dict__)
     args.update(environment_config.__dict__)
+    args.update(run_config.__dict__)
     args.update(online_config.__dict__)
     if transformer_model_config is not None:
         args.update(transformer_model_config.__dict__)
